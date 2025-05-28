@@ -6,7 +6,7 @@ export const metadata = {
   title: "Job Sheet Filler",
   description: "Fill job sheets by pasting data and generating PDFs",
   manifest: "/manifest.json",
-    generator: 'v0.dev'
+  generator: "v0.dev",
 }
 
 export default function RootLayout({

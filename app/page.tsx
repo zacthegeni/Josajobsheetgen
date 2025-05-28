@@ -7,11 +7,9 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { PDFDocument, StandardFonts } from "pdf-lib"
-import { Clipboard, FileText, Info, Upload, Check, Eye, Github } from "lucide-react"
+import { Clipboard, FileText, Info, Upload, Check, Eye, Github, AlertTriangle, RefreshCw } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 
 // These are the exact coordinates from your Python application
 const FIELD_POSITIONS = {
@@ -24,7 +22,10 @@ const FIELD_POSITIONS = {
   products: { x: 59.4, y: 331.2, spacing: 19 }, // Starting Y and spacing between products
 }
 
-// Template filename
+// GitHub repository information - case sensitive!
+const GITHUB_USERNAME = "zacthegeni"
+const GITHUB_REPO = "Josajobsheetgen"
+const GITHUB_BRANCH = "main"
 const TEMPLATE_FILENAME = "NEW JOB SHEET - 2024.pdf"
 
 export default function JobSheetFiller() {
@@ -34,47 +35,86 @@ export default function JobSheetFiller() {
   const [success, setSuccess] = useState(false)
   const [pdfTemplate, setPdfTemplate] = useState<ArrayBuffer | null>(null)
   const [pdfTemplateUploaded, setPdfTemplateUploaded] = useState(false)
-  const [useGeneratedTemplate, setUseGeneratedTemplate] = useState(false)
+  const [useGeneratedTemplate, setUseGeneratedTemplate] = useState(false) // Always use GitHub template
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [generatingTemplate, setGeneratingTemplate] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [previewUrl, setPreviewUrl] = useState("")
   const [loadingGithubTemplate, setLoadingGithubTemplate] = useState(false)
+  const [githubError, setGithubError] = useState("")
+  const [retryCount, setRetryCount] = useState(0)
+  const [templatePath, setTemplatePath] = useState(`public/${TEMPLATE_FILENAME}`)
 
   // Try to fetch template on component mount
   useEffect(() => {
-    fetchTemplateFromSameRepo()
-  }, [])
+    fetchTemplateFromGitHub()
+  }, [retryCount, templatePath])
 
-  const fetchTemplateFromSameRepo = async () => {
+  const fetchTemplateFromGitHub = async () => {
     setLoadingGithubTemplate(true)
-    setError("")
+    setGithubError("")
 
-    try {
-      // When hosted on GitHub Pages, we can load the PDF from the same repository
-      // The path is relative to the base URL of the deployed site
-      const templatePath = `/${TEMPLATE_FILENAME}`
+    // Try multiple possible locations for the PDF
+    const possiblePaths = [
+      `${TEMPLATE_FILENAME}`, // Root directory
+      `public/${TEMPLATE_FILENAME}`, // Public directory
+      `app/${TEMPLATE_FILENAME}`, // App directory
+      templatePath, // Current template path
+    ]
 
-      console.log(`Trying to fetch template from: ${templatePath}`)
-      const response = await fetch(templatePath)
+    let templateFound = false
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch template: ${response.status} ${response.statusText}`)
+    for (const path of possiblePaths) {
+      if (templateFound) break
+
+      try {
+        const rawGitHubUrl = `https://raw.githubusercontent.com/${GITHUB_USERNAME}/${GITHUB_REPO}/${GITHUB_BRANCH}/${path}`
+        console.log(`Trying to fetch template from: ${rawGitHubUrl}`)
+
+        const response = await fetch(rawGitHubUrl)
+
+        if (!response.ok) {
+          console.log(`Path ${path} failed with status: ${response.status}`)
+          continue
+        }
+
+        const templateBuffer = await response.arrayBuffer()
+
+        // Try to validate the PDF before setting it
+        try {
+          // This will throw an error if the PDF is invalid
+          await PDFDocument.load(templateBuffer)
+
+          // If we get here, the PDF is valid
+          setPdfTemplate(templateBuffer)
+          setPdfTemplateUploaded(true)
+          setUseGeneratedTemplate(false)
+          setTemplatePath(path)
+          templateFound = true
+          console.log(`Template loaded successfully from path: ${path}`)
+          break
+        } catch (pdfError) {
+          console.error(`Invalid PDF format at path ${path}:`, pdfError)
+          continue
+        }
+      } catch (err) {
+        console.error(`Error loading template from path ${path}:`, err)
+        continue
       }
-
-      const templateBuffer = await response.arrayBuffer()
-      setPdfTemplate(templateBuffer)
-      setPdfTemplateUploaded(true)
-      setUseGeneratedTemplate(false)
-      console.log("Template loaded successfully")
-    } catch (err) {
-      console.error("Error loading template:", err)
-      setError(`Template not available. Using generated template instead.`)
-      // Fallback to generated template
-      await generateBlankTemplate()
-    } finally {
-      setLoadingGithubTemplate(false)
     }
+
+    if (!templateFound) {
+      setGithubError(`Failed to load template from GitHub. Please make sure the PDF is in your repository.`)
+
+      // Only generate a template if explicitly requested
+      if (useGeneratedTemplate) {
+        generateBlankTemplate()
+      } else {
+        setPdfTemplateUploaded(false)
+      }
+    }
+
+    setLoadingGithubTemplate(false)
   }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -94,10 +134,21 @@ export default function JobSheetFiller() {
     const reader = new FileReader()
     reader.onload = (event) => {
       if (event.target?.result instanceof ArrayBuffer) {
-        setPdfTemplate(event.target.result)
-        setPdfTemplateUploaded(true)
-        setUseGeneratedTemplate(false)
-        setError("")
+        try {
+          // Validate the PDF before setting it
+          PDFDocument.load(event.target.result)
+            .then(() => {
+              setPdfTemplate(event.target.result)
+              setPdfTemplateUploaded(true)
+              setUseGeneratedTemplate(false)
+              setError("")
+            })
+            .catch((err) => {
+              setError("The uploaded file is not a valid PDF")
+            })
+        } catch (err) {
+          setError("The uploaded file is not a valid PDF")
+        }
       } else {
         setError("Failed to read the PDF file")
       }
@@ -416,7 +467,7 @@ export default function JobSheetFiller() {
       generateBlankTemplate()
     } else {
       // If turning off generated template, try to fetch from repo again
-      fetchTemplateFromSameRepo()
+      fetchTemplateFromGitHub()
     }
   }
 
@@ -468,7 +519,21 @@ export default function JobSheetFiller() {
       }
 
       // Load and fill the PDF
-      const pdfDoc = await PDFDocument.load(pdfTemplate)
+      let pdfDoc
+      try {
+        pdfDoc = await PDFDocument.load(pdfTemplate)
+      } catch (pdfError) {
+        console.error("PDF parsing error:", pdfError)
+        // If we can't load the existing template, try to fetch it again
+        setError("Error loading the PDF template. Trying to fetch it again...")
+        await fetchTemplateFromGitHub()
+
+        if (!pdfTemplate) {
+          throw new Error("Could not load a valid PDF template. Please try again.")
+        }
+
+        pdfDoc = await PDFDocument.load(pdfTemplate)
+      }
       const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica)
       const page = pdfDoc.getPages()[0]
       const { height } = page.getSize()
@@ -578,13 +643,9 @@ export default function JobSheetFiller() {
       <Card>
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
-            <img
-              src="/placeholder.svg?height=100&width=200&query=Josa%20Solutions%20Logo"
-              alt="Josa Solutions Logo"
-              className="h-20 object-contain"
-            />
+            <img src="/josa-logo.png" alt="Josa Solutions Logo" className="h-24 object-contain" />
           </div>
-          <CardTitle className="text-xl">Josa Solutions - Installation Worksheet Filler</CardTitle>
+          <CardTitle className="text-xl">Installation Worksheet Filler</CardTitle>
           <CardDescription>Fill job sheets by pasting data and generating PDFs</CardDescription>
         </CardHeader>
         <CardContent>
@@ -698,12 +759,35 @@ export default function JobSheetFiller() {
                 <div className="border rounded-lg p-4">
                   <div className="flex items-center mb-2">
                     <Github className="h-5 w-5 mr-2 text-gray-500" />
-                    <h3 className="font-medium">Repository Template</h3>
+                    <h3 className="font-medium">GitHub Template</h3>
                   </div>
-                  <p className="text-sm text-muted-foreground mb-3">Load the template from this repository</p>
+                  <p className="text-sm text-muted-foreground mb-3">Load the template from GitHub repository</p>
+
+                  {githubError && (
+                    <Alert variant="destructive" className="mb-3">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>GitHub Error</AlertTitle>
+                      <AlertDescription>{githubError}</AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="text-xs text-muted-foreground mb-3">
+                    <p>
+                      <strong>Repository:</strong> {GITHUB_USERNAME}/{GITHUB_REPO}
+                    </p>
+                    <p>
+                      <strong>File:</strong> {templatePath}
+                    </p>
+                    <p className="mt-1 text-green-600">
+                      {pdfTemplateUploaded && !useGeneratedTemplate && "✓ Template loaded successfully"}
+                    </p>
+                  </div>
+
                   <Button
                     variant="outline"
-                    onClick={fetchTemplateFromSameRepo}
+                    onClick={() => {
+                      setRetryCount((prev) => prev + 1) // This will trigger the useEffect
+                    }}
                     disabled={loadingGithubTemplate}
                     className="w-full"
                   >
@@ -719,12 +803,11 @@ export default function JobSheetFiller() {
                       </>
                     ) : (
                       <>
-                        <Github className="mr-2 h-4 w-4" />
-                        Load from Repository
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                        Retry Loading Template
                       </>
                     )}
                   </Button>
-                  <p className="text-xs text-muted-foreground mt-2">File: {TEMPLATE_FILENAME}</p>
                 </div>
 
                 <div className="grid gap-4">
@@ -759,55 +842,6 @@ export default function JobSheetFiller() {
                       </Button>
                     </div>
                   </div>
-
-                  {/* Option 2: Generate Template */}
-                  <div className="border rounded-lg p-4">
-                    <div className="flex items-center mb-2">
-                      <FileText className="h-5 w-5 mr-2 text-gray-500" />
-                      <h3 className="font-medium">Generate Template</h3>
-                    </div>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Create a blank job sheet template automatically
-                    </p>
-                    <div className="flex items-center space-x-2">
-                      <Switch
-                        id="generate-template"
-                        checked={useGeneratedTemplate}
-                        onCheckedChange={toggleGeneratedTemplate}
-                      />
-                      <Label htmlFor="generate-template" className="cursor-pointer">
-                        Use generated template
-                      </Label>
-                    </div>
-
-                    {generatingTemplate && (
-                      <div className="flex items-center justify-center p-4">
-                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900"></div>
-                        <span className="ml-2">Generating template...</span>
-                      </div>
-                    )}
-
-                    {useGeneratedTemplate && pdfTemplateUploaded && !generatingTemplate && (
-                      <Alert className="bg-green-50 text-green-800 border-green-200 mt-3">
-                        <Check className="h-4 w-4" />
-                        <AlertTitle>Template Ready</AlertTitle>
-                        <AlertDescription>Template generated successfully!</AlertDescription>
-                      </Alert>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mt-6 pt-4 border-t">
-                  <h3 className="font-medium mb-2">Example Input</h3>
-                  <pre className="bg-gray-100 p-2 rounded text-xs overflow-x-auto">
-                    Josa Solutions{"\n"}6 Apsley Road, The Acres Estate, Horley, RH6 9RX{"\n"}
-                    07715104364{"\n"}
-                    dannymoffatt75@gmail.com{"\n"}
-                    Schwinn 800IC Indoor Cycle{"\n"}
-                    Fitshop Equipment Mat - Small{"\n"}
-                    SORD64947{"\n"}
-                    WK1264357
-                  </pre>
                 </div>
               </div>
             </TabsContent>
